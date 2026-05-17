@@ -378,3 +378,92 @@ tests/
 
 测试文件与源码模块一一对应，命名 `test_` 前缀。
 
+---
+## 十一、前端通用规范
+
+以下原则跨前端框架适用（React / Vue / Svelte / 小程序均适用）。
+
+### 11.1 状态管理
+
+派生状态使用计算属性，禁止在渲染函数中重建对象：
+
+```js
+// 错误：每次渲染创建新对象，展开状态丢失
+const fields = rawFields.map(f => ({ ...f, expanded: false }))
+
+// 正确：用 computed 保持引用稳定
+const expandedIds = ref(new Set())
+const fields = computed(() =>
+  rawFields.value.map(f => ({ ...f, expanded: expandedIds.value.has(f.id) }))
+)
+```
+
+同样适用于 React 的 `useMemo`，Vue 的 `computed`，Svelte 的 `$derived`。
+
+### 11.2 异步请求竞态保护
+
+多个异步请求可能以任意顺序返回，必须保护：
+
+```js
+// 错误：旧请求可能后返回，覆盖新数据
+const load = async (id) => {
+  data.value = await fetchData(id)
+}
+
+// 正确：用 token/AbortController 忽略过期响应
+let requestToken = 0
+const load = async (id) => {
+  const token = ++requestToken
+  const result = await fetchData(id)
+  if (token === requestToken) { data.value = result }
+}
+```
+
+### 11.3 请求防重
+
+加载中状态必须阻止重复请求：
+
+```js
+const loading = ref(false)
+const load = async () => {
+  if (loading.value) return    // 已在加载中，不重复发
+  loading.value = true
+  try { ... } finally { loading.value = false }
+}
+```
+
+### 11.4 格式化函数复用
+
+同一项目的格式化逻辑（状态文案、标签颜色、日期格式）必须抽取为公共工具函数，禁止在多个页面中重复定义。
+
+### 11.5 样式原则
+
+优先使用 UI 框架内置组件和变体，不写自定义 CSS。只有在框架组件无法满足的业务可视化场景（如图表、柱状图），才允许有限的 inline style。
+
+---
+## 十二、审查漏检补救
+
+以下信号在审查时极易被忽略，必须作为专项检查项：
+
+### 12.1 异步/并发安全
+
+| 检查项 | 说明 |
+|--------|------|
+| 异步会话/连接是否被多协程共享 | 数据库会话、HTTP 连接池不是协程安全的 |
+| 并发操作是否有上限 | `asyncio.gather(*N_tasks)` 必须有 Semaphore |
+| 共享可变状态是否有锁 | 多协程写同一数据结构 |
+
+### 12.2 值语义陷阱
+
+| 检查项 | 说明 |
+|--------|------|
+| `0`/`""`/`[]` 和 `None`/`null` 是否被区分 | 布尔上下文判断（`if value`）会吞掉合法零值 |
+| 空数据结构反序列化 | `json.loads` 可能对空值返回非预期类型 |
+
+### 12.3 类型/导入完整性
+
+| 检查项 | 说明 |
+|--------|------|
+| 所有类型注解中使用的类型是否已导入 | `Optional`、`List`、`Union` 等需要显式导入 |
+| 方法签名中的类型与返回值一致 | 声明 `Optional[int]` 就不要返回 `None` 之外的非 int |
+
