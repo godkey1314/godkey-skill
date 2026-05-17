@@ -45,37 +45,31 @@
 
 任何代码都存在于明确的架构层中。写代码前必须先确定：这一行属于哪一层？
 
-```
-接口层（Controller/Handler/Route）：只做路由、入参、出参、调用下层
-   ↓ 只能向下调用
-业务层（Service/UseCase）：业务编排、事务边界、跨模块协作
-   ↓ 只能向下调用
-数据层（Mapper/Repository/DAO）：只做数据访问，不写业务判断
-```
+每一层只能向下依赖，不能反向。通用三层模型：
 
-### 1.2 每层的"能"与"不能"
-
-| 层 | 能做 | 不能做 |
+| 层 | 职责 | 不能做 |
 |---|---|---|
-| **接口层** | 路由定义、参数校验、调用 Service、包装响应 | 写业务判断、拼装复杂上下文、直接访问数据库 |
-| **业务层** | 业务编排、事务管理、调用 Mapper 和其他 Service | 直接拼 SQL、直接操作数据库会话、把复杂返回结构写死在接口层 |
-| **数据层** | 数据库访问、查询构建、数据持久化 | 写业务判断、做业务过滤（应在业务层完成） |
+| **接入层** | 接收外部请求/事件，参数校验，调用业务层，返回响应 | 写业务判断、直接访问持久化设施 |
+| **业务层** | 业务逻辑、流程编排、事务边界、跨模块协作 | 直接操作持久化设施的实现细节 |
+| **基础层** | 数据持久化、外部服务调用、消息队列、文件系统访问 | 写业务判断、做业务过滤 |
+
+### 1.2 独立能力层
+
+除了通用三层，项目可能有独立的能力层：
+
+- **计算层**：纯数学计算、统计聚合、数据转换（不写业务判断）
+- **代理层**：对接外部 API、数据格式转换（不写业务判断）
+- **智能层**：AI 推理、分析、生成
 
 ### 1.3 跨层污染识别
 
-以下信号表示代码位置放错了：
+以下信号表示代码位置放错了（语言无关）：
 
-- 在 Service 中看到 SQL 字符串 → 应该在 Mapper
-- 在 Mapper 中看到业务条件判断 → 应该在 Service
-- 在 Controller 中看到数据库操作 → 应该在 Service/Mapper
-- 借用不相关模块的数据库会话 → 抽象错误
-
-### 1.4 独立计算层
-
-如果项目有独立的计算层（如数据分析、统计计算），其规则是：
-
-- **能做**：纯数学计算、统计聚合、数据转换
-- **不能做**：硬编码业务判断、输出分析结论、写数据库
+- 在业务层中看到拼接的数据查询语句 → 应在基础层
+- 在基础层中看到业务条件判断 → 应在业务层
+- 在接入层中看到持久化操作 → 应在业务层/基础层
+- 借用不相关模块的底层资源（连接、会话、句柄）→ 抽象错误
+- 在能力层中硬编码业务决策 → 应在上层完成
 
 ---
 
@@ -131,22 +125,14 @@
 
 状态码、类型标识、业务常量必须使用枚举或命名常量，不得出现裸数字/字符串：
 
-```python
-# 错误：魔法值
-if record.is_deleted == 0:           # 0 是什么意思？
-    record.status = "active"          # "active" 还有哪些可能值？
-
-# 正确：枚举
-if record.is_deleted == DeleteStatus.NORMAL:
-    record.status = RecordStatus.ACTIVE
 ```
+# 错误：魔法值
+if record.deleted == 0:        # 0 代表什么？
+    record.status = "active"    # 还有哪些可能值？
 
-```go
-// 错误
-if user.Role == "admin" { ... }
-
-// 正确
-if user.Role == RoleAdmin { ... }
+# 正确：枚举/常量
+if record.deleted == DeleteStatus.NORMAL:
+    record.status = Status.ACTIVE
 ```
 
 所有有业务含义的固定值集合都必须定义为枚举。包括但不限于：删除标记、状态、类型、模式、来源、级别。
@@ -158,24 +144,19 @@ if user.Role == RoleAdmin { ... }
 ```
 # 正确
 models/
-├── orm/user.py          # ORM 数据库模型
-├── orm/order.py
-├── api/user_vo.py       # 接口视图对象（DTO / VO 统一放这）
-└── api/order_vo.py
+├── entity/user.py       # 数据实体
+├── entity/order.py      # 另一个实体 → 不同文件
+├── api/user_result.py   # 接口视图对象
+└── api/order_result.py
 
 # 错误
-models.py                 # 所有模型塞一个文件
-models/
-├── user.py               # UserORM + UserVO + UserDTO 全在一个文件
-└── api/
-    ├── dto/user_dto.py   # DTO/VO 没必要再分一层子文件夹
-    └── vo/user_vo.py     # 它们都是视图对象，放在 api/ 下即可
+models.py                # 所有模型塞一个文件
+models/user.py            # 实体 + 视图对象 + 请求对象全在一个文件
 ```
 
 - 每个文件只放一种模型/一个实体
-- ORM 数据库模型和接口视图对象物理隔离
-- DTO / VO 统一放在 `models/api/` 下，不再细分文件夹（它们都是视图对象）
-- 文件名体现模型类型和所属实体
+- 数据实体和接口视图对象物理隔离
+- 视图对象统一放在独立目录，不再细分（它们都是同一个职责）
 
 ### 3.6 代码格式基础
 
@@ -219,54 +200,40 @@ models/
 
 ---
 
-## 六、数据访问纪律
+## 六、数据与 I/O 访问纪律
 
 ### 6.1 查询归属
 
-- 所有数据库查询只能在数据层（Mapper/Repository/DAO）
-- 其他层通过调用数据层接口获取数据，不直接操作数据库
+- 所有持久化操作只能在基础层（数据访问组件）
+- 其他层通过调用基础层接口获取数据，不直接操作数据库、文件系统或外部服务
 
 ### 6.2 性能铁律
 
 | 禁止 | 替代做法 |
 |------|---------|
-| 加载完整对象列表只为了取 count | 使用 COUNT 查询 |
-| 对 N 个目标逐条查询（N+1） | 合并为一条 SQL 或批量查询 |
-| 无界并发（N 个任务同时启动无上限） | 使用 Semaphore 限制并发数（建议 3-5） |
-| 同一个异步会话被多个协程并发使用 | 每个协程独立获取会话，或改为顺序执行 |
+| 加载完整对象列表只为了取数量 | 使用计数查询 |
+| 对 N 个目标逐条查询（N+1） | 合并为批量查询或一次查询 |
+| 无界并发（N 个任务同时启动无上限） | 使用并发限制（如信号量，建议 3-5） |
+| 同一个异步会话/连接被多协程/线程共享 | 各自独立获取会话，或改为顺序执行 |
 
 ### 6.3 查询范围
 
-- 明确指定查询日期/时间范围，不扫全表
-- 聚合统计按合理粒度分组，不做全局聚合稀释问题
+- 明确指定查询范围（时间、分页等），不无界扫描
+- 聚合统计按合理粒度分组，不做全局聚合稀释局部问题
 
 ### 6.4 热路径缓存
 
-高频访问的查询结果应优先使用预计算结果，避免每次请求都实时扫描：
+高频访问的查询结果应优先使用预计算结果：
 
 | 场景 | 做法 |
 |------|------|
-| 首页/Dashboard 接口 | 优先读取快照/缓存，实时计算作为 fallback |
-| 定时任务产出的结果 | 持久化为快照，接口读取快照而非重新计算 |
-| 多次请求相同数据 | 缓存结果，设置合理的过期时间 |
-
-原则：**高频读取的数据不应每次实时计算。** 快照 + 实时 fallback 是推荐模式。
+| 首页/Dashboard 接口 | 优先读快照/缓存，实时计算作为 fallback |
+| 批处理产出的结果 | 持久化结果，接口读结果而非重新计算 |
+| 多次请求相同数据 | 缓存，设置合理过期时间 |
 
 ### 6.5 查询合并
 
-对同一张表的多个统计查询必须合并为一条 SQL，禁止逐字段/逐规则分别查询：
-
-```sql
--- 错误：N 个字段 N 条 SQL
-SELECT date, COUNT(*) FILTER (WHERE col_a IS NULL) ... GROUP BY date
-SELECT date, COUNT(*) FILTER (WHERE col_b IS NULL) ... GROUP BY date
-
--- 正确：一条 SQL 统计全部字段
-SELECT date,
-  COUNT(*) FILTER (WHERE col_a IS NULL) AS col_a_nulls,
-  COUNT(*) FILTER (WHERE col_b IS NULL) AS col_b_nulls
-... GROUP BY date
-```
+对同一数据源的多个统计查询必须合并，禁止逐字段/逐条件分别查询。一次查询统计全部所需字段。
 
 ---
 ## 七、代码重复与抽象时机
@@ -304,23 +271,25 @@ SELECT date,
 
 `0`、空字符串 `""`、空列表 `[]` 和 `None` 语义不同。禁止用 falsy 检查替代 None 检查：
 
-```python
-# 错误：0 被当成 None
-value = result.get("coverage_rate")
-rate = float(value) if value else None  # coverage_rate=0 → None！
+```
+# 错误：0 被当成"不存在"
+value = result.get("rate")
+rate = to_number(value) if value else null  # rate=0 → null！
 
 # 正确
-rate = float(value) if value is not None else None
+rate = to_number(value) if value is not null else null
 ```
 
-### 8.2 适用场景
+### 8.2 各语言检查方式
 
-| 语言 | 检查方式 |
+| 语言 | 区分方式 |
 |------|---------|
 | Python | `if x is not None` 而非 `if x` |
-| JavaScript | `x != null` 而非 `!x` |
+| JavaScript/TS | `x != null` 而非 `!x` |
 | Go | 显式检查零值 vs nil |
-| Java | `Optional` 或显式 null 检查 |
+| Java/Kotlin | `Optional` 或显式 null 检查 |
+| Rust | `Option<T>` 模式匹配 |
+| C# | `x is not null` 或 `Nullable<T>.HasValue` |
 
 规则：**区分"值为零"和"值不存在"。** 布尔上下文判断只在明确需要时使用。
 
@@ -331,13 +300,13 @@ rate = float(value) if value is not None else None
 
 通用组件（如 TaskExecutor、框架中间件）不应包含特定业务领域的判断逻辑：
 
-```python
-# 错误：通用执行器识别"low_volume"这类业务语义
-if warning_type == "low_volume":
-    ...
+```
+# 错误：通用执行器识别特定业务告警类型
+if warning.type == "low_inventory":
+    handle_inventory_alert()
 
-# 正确：通用执行器只持久化通用 warnings 字段
-quality_warnings = [{"type": t, "dates": d, ...}]
+# 正确：通用执行器只记录通用结构，业务处理留给业务模块
+warnings = [{"type": t, "context": {...}}]
 ```
 
 ### 9.2 修正方式

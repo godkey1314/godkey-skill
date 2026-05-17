@@ -98,27 +98,28 @@
 
 ### 案例：废弃字段的兼容代码
 
-某个字段 `old_score` 已不再被接口返回，但代码中保留了：
+某个字段已不再被外部返回，但代码中保留了兼容逻辑：
 
-```python
-score = getattr(row, "old_score", 0)  # 兼容旧数据
+```
+# 错误
+value = get_fallback(row, "old_field", default=0)  # 兼容旧数据
 ```
 
-**判断**：字段已废弃 → 删除代码，删除模型中的字段定义，如有数据库列也排入清理计划。
+**判断**：字段已废弃 → 删除代码、模型定义，排入清理计划。
 
-**不要做**：保留代码 + 加注释"待删除"。要么删，要么不删，没有"标记"状态。
+**不要做**：保留代码 + 注释"待删除"。要么删，要么不删。
 
-### 案例：计数查询加载全量对象
+### 案例：查询总数却加载全量数据
 
-需要知道有效记录总数，代码加载了所有完整对象再取 `len()`。
+需要知道记录总数，却加载了所有完整对象再取长度：
 
-```python
-# 错误：加载全量对象
-records = await service.find_by_filters(status="active")
+```
+# 错误：加载全量只为取数量
+records = repo.find_by(status="active")
 count = len(records)
 
-# 正确：直接 COUNT
-count = await repository.count_by_filters(status="active")
+# 正确：直接查询总数
+count = repo.count(status="active")
 ```
 
-**判断**：数据层的查询优化是数据层的职责，不能因为"方便"就拉全量数据到业务层。
+**判断**：查询优化是基础层的职责，不能因为方便就把全量数据拉到业务层。
