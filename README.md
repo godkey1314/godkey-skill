@@ -32,7 +32,7 @@ GodKey Skill 是一套**通用编程方法论**，编码为 Claude Code 的 Skil
 
 ```bash
 # 全局安装（所有项目可用）
-git clone https://github.com/YOUR_USERNAME/godkey-skill.git ~/.claude/skills/godkey-skill
+git clone https://github.com/godkey1314/godkey-skill.git ~/.claude/skills/godkey-skill
 ```
 
 安装后 Claude Code 会自动识别。在你进行代码开发、审查、重构时自动触发，也可以手动触发：
