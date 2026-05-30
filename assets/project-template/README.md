@@ -18,7 +18,7 @@
 ## 📂 目录结构
 
 ```
-ocra-doc/
+doc/
 ├── 01-产品介绍/        产品层面文档（对外）
 ├── 02-使用指南/        用户使用手册
 ├── 03-系统架构/        技术架构设计
@@ -37,7 +37,7 @@ ocra-doc/
 
 ### 第1步：复制模板
 ```bash
-cp -r ocra-doc/ your-project/docs/
+cp -r doc/ your-project/docs/
 ```
 
 ### 第2步：AI开始工作
