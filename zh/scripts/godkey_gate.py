@@ -182,6 +182,128 @@ def commit_exists(project_root: Path, ref: str) -> bool:
     return code == 0
 
 
+def is_git_ignored(project_root: Path, rel_posix: str) -> bool:
+    if not rel_posix or not is_git_repo(project_root):
+        return False
+    code, _, _ = run_git(project_root, ["check-ignore", "-q", "--", rel_posix])
+    return code == 0
+
+
+def is_git_tracked(project_root: Path, rel_posix: str) -> bool:
+    if not rel_posix or not is_git_repo(project_root):
+        return False
+    code, _, _ = run_git(project_root, ["ls-files", "--error-unmatch", "--", rel_posix])
+    return code == 0
+
+
+def is_hotfix_local_only(project_root: Path, hotfix_rel: str) -> bool:
+    return is_git_ignored(project_root, hotfix_rel) and not is_git_tracked(project_root, hotfix_rel)
+
+
+def is_active_progress_local_only(
+    project_root: Path, changes_rel: str, package_dir: Optional[Path] = None
+) -> bool:
+    if package_dir is not None:
+        prog_rel = to_posix_rel(package_dir / "02-进展.md", project_root)
+        if prog_rel:
+            return is_git_ignored(project_root, prog_rel) and not is_git_tracked(project_root, prog_rel)
+    probe_rel = f"{changes_rel}/{STATE_DIRS['active']}/_probe/02-进展.md"
+    return is_git_ignored(project_root, probe_rel)
+
+
+HOTFIX_ENTRY_HEADER_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*[—\-–]\s*(.+)$")
+
+
+def parse_hotfix_entries(hotfix_path: Path) -> List[Tuple[str, str]]:
+    """解析 hotfix记录.md 中的条目，返回 [(date_str, block_text), ...]。"""
+    if not hotfix_path.is_file():
+        return []
+    entries: List[Tuple[str, str]] = []
+    cur_date: Optional[str] = None
+    cur_lines: List[str] = []
+    for raw in hotfix_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = HOTFIX_ENTRY_HEADER_RE.match(raw.strip())
+        if m:
+            if cur_date is not None:
+                entries.append((cur_date, "\n".join(cur_lines)))
+            cur_date = m.group(1)
+            cur_lines = [raw]
+        elif cur_date is not None:
+            cur_lines.append(raw)
+    if cur_date is not None:
+        entries.append((cur_date, "\n".join(cur_lines)))
+    return entries
+
+
+def _hotfix_body_mentions_file(body: str, rel_posix: str) -> bool:
+    norm_body = body.replace("\\", "/").lower()
+    norm_rel = rel_posix.replace("\\", "/").strip("./").lower()
+    if norm_rel and norm_rel in norm_body:
+        return True
+    fname = Path(norm_rel).name
+    if not fname:
+        return False
+    return bool(re.search(rf"(?<![a-z0-9_.\-/]){re.escape(fname)}(?![a-z0-9_.\-])", norm_body))
+
+
+def has_local_hotfix_for_files(
+    hotfix_path: Path,
+    code_files: Sequence[str],
+    check_recent_date: bool = True,
+) -> Tuple[bool, str]:
+    """当 hotfix记录.md 被 .gitignore 忽略且未纳入 Git 跟踪时，从本地磁盘核验最新实质记录。"""
+    entries = parse_hotfix_entries(hotfix_path)
+    if not entries:
+        return False, f"本地 `{hotfix_path.name}` 无有效记录条目"
+
+    entry_date, body = entries[-1]
+    body_lines = strip_template_noise(body)
+    if len(body_lines) < 2:
+        return False, f"本地 `{hotfix_path.name}` 最新条目（{entry_date}）实质内容不足"
+
+    if check_recent_date:
+        try:
+            d = dt.date.fromisoformat(entry_date)
+        except ValueError:
+            return False, f"本地 `{hotfix_path.name}` 最新条目日期非法（{entry_date}）"
+        today = dt.date.today()
+        if abs((today - d).days) > 1:
+            return False, f"本地 `{hotfix_path.name}` 最新记录日期为 {entry_date}（非本次改动当天），请追加本次记录"
+
+    missing = [cf for cf in code_files if not _hotfix_body_mentions_file(body, cf)]
+    if missing:
+        return False, f"本地 `{hotfix_path.name}` 最新记录（{entry_date}）未涵盖本次改动文件：{', '.join(missing)}"
+
+    return True, f"最新条目 {entry_date} 已涵盖 {', '.join(code_files)}"
+
+
+def find_local_active_progress(
+    project_root: Path, changes_root: Path, package_dir: Optional[Path] = None
+) -> List[str]:
+    """当动态活跃目录被 .gitignore 忽略时，检查本地未跟踪活跃功能包是否存在已实质填写的 02-进展.md。"""
+    tpl_prog = TEMPLATES_ROOT / "change-package" / "02-进展.md"
+    candidates: List[Path]
+    if package_dir is not None:
+        candidates = [package_dir]
+    else:
+        candidates = list_state_packages(changes_root).get("active", [])
+
+    matched: List[str] = []
+    for pkg in candidates:
+        prog = pkg / "02-进展.md"
+        if not prog.is_file():
+            continue
+        prog_rel = to_posix_rel(prog, project_root)
+        if prog_rel and is_git_tracked(project_root, prog_rel):
+            continue
+        added = meaningful_added_lines(prog, tpl_prog)
+        added_chars = sum(len(re.sub(r"\s+", "", ln)) for ln in added)
+        if added and added_chars >= 12:
+            mtime = dt.datetime.fromtimestamp(prog.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            matched.append(f"{pkg.name}（更新于 {mtime}）")
+    return matched
+
+
 def default_config_for(profile: str) -> Dict:
     tpl_cfg = TEMPLATES_ROOT / profile / ".godkey.json"
     return json.loads(tpl_cfg.read_text(encoding="utf-8"))
@@ -874,7 +996,15 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     changes_dir_name = cfg["changesDir"]
     changes_root = doc_root / changes_dir_name
-    print(f"\n--- 动态变更层（{changes_dir_name}/）---")
+    doc_root_rel = to_posix_rel(doc_root, project_root)
+    local_only_tag = ""
+    if doc_root_rel is not None:
+        changes_rel = f"{doc_root_rel}/{changes_dir_name}".strip("/")
+        if is_active_progress_local_only(project_root, changes_rel) or is_hotfix_local_only(
+            project_root, f"{changes_rel}/hotfix记录.md"
+        ):
+            local_only_tag = " [本地保留，已被 .gitignore 忽略]"
+    print(f"\n--- 动态变更层（{changes_dir_name}/）{local_only_tag} ---")
     if not changes_root.is_dir():
         print("  ❌ 动态变更目录缺失")
         return 1
@@ -1133,6 +1263,16 @@ def evaluate_sync(
 
     changes_rel = f"{doc_root_rel}/{cfg['changesDir']}".strip("/")
     hotfix_rel = f"{changes_rel}/hotfix记录.md"
+    changes_root = doc_root / cfg["changesDir"]
+    hotfix_local_only = is_hotfix_local_only(project_root, hotfix_rel)
+    active_local_only = is_active_progress_local_only(project_root, changes_rel, package_dir)
+    if hotfix_local_only or active_local_only:
+        scope_parts = []
+        if active_local_only:
+            scope_parts.append("活跃功能包")
+        if hotfix_local_only:
+            scope_parts.append("hotfix记录.md")
+        infos.append(f"提示：动态变更目录（{'/'.join(scope_parts)}）已被 .gitignore 忽略且未纳入 Git，动态记录将回退本地磁盘核验。")
     hints = cfg.get("codePathHints", {})
     sync_rules = cfg.get("staticSyncRules", {})
 
@@ -1263,7 +1403,20 @@ def evaluate_sync(
                 "Hotfix 仅限不改变架构与表结构的局部修复，请走标准功能包。"
             )
         if code_files and hotfix_rel not in dynamic_docs_changed:
-            failures.append(f"Hotfix 门禁拒绝：代码已改动但未更新 `{hotfix_rel}`，请先运行 `godkey_gate.py hotfix` 记录。")
+            if hotfix_local_only:
+                ok_local, detail = has_local_hotfix_for_files(
+                    changes_root / "hotfix记录.md",
+                    code_files,
+                    check_recent_date=(diff_source != "HEAD~1..HEAD"),
+                )
+                if ok_local:
+                    infos.append(f"  ✅ Hotfix 台账（本地磁盘核验）：{detail}")
+                else:
+                    failures.append(
+                        f"Hotfix 门禁拒绝：{detail}；请先运行 `godkey_gate.py hotfix` 记录本次改动。"
+                    )
+            else:
+                failures.append(f"Hotfix 门禁拒绝：代码已改动但未更新 `{hotfix_rel}`，请先运行 `godkey_gate.py hotfix` 记录。")
         return len(failures) == 0, infos, warnings, failures
 
     if not code_files and not db_triggers and not ops_triggers and not arch_triggers:
@@ -1273,11 +1426,33 @@ def evaluate_sync(
     # commit 模式：WIP 友好，但要求至少有进展/hotfix 记录或静态文档更新
     if gate_mode == "commit":
         has_any_doc = bool(static_docs_changed or dynamic_docs_changed)
+        if not has_any_doc and (active_local_only or hotfix_local_only):
+            local_progs = find_local_active_progress(project_root, changes_root, package_dir) if active_local_only else []
+            if local_progs:
+                has_any_doc = True
+                infos.append(
+                    f"  ✅ 动态进展（本地磁盘核验）：命中已填写进展的活跃功能包 {', '.join(local_progs)}"
+                )
+            elif hotfix_local_only and len(code_files) <= 1 and not db_triggers and not ops_triggers and not arch_triggers:
+                ok_hf, detail_hf = has_local_hotfix_for_files(
+                    changes_root / "hotfix记录.md",
+                    code_files,
+                    check_recent_date=(diff_source != "HEAD~1..HEAD"),
+                )
+                if ok_hf:
+                    has_any_doc = True
+                    infos.append(f"  ✅ Hotfix 台账（本地磁盘核验）：{detail_hf}")
         if not has_any_doc:
-            failures.append(
-                "代码已修改但未更新任何进展记录（02-进展.md / hotfix记录.md）或静态文档。"
-                "请先记录本次迭代进展再提交。"
-            )
+            if active_local_only or hotfix_local_only:
+                failures.append(
+                    "代码已修改，静态文档未更新，且本地被 .gitignore 忽略的动态目录中未检测到已填写实质进展的活跃功能包"
+                    "（02-进行中/*/02-进展.md）或匹配本次改动的 hotfix记录.md。请先记录本次迭代进展再提交。"
+                )
+            else:
+                failures.append(
+                    "代码已修改但未更新任何进展记录（02-进展.md / hotfix记录.md）或静态文档。"
+                    "请先记录本次迭代进展再提交。"
+                )
         else:
             pending: List[str] = []
             if code_files and not doc_rule_satisfied(static_docs_changed, doc_root_rel, sync_rules.get("featureDocs", [])):
@@ -1301,7 +1476,12 @@ def evaluate_sync(
         ("archDocs", "系统架构与技术选型", bool(arch_triggers), arch_triggers[:5]),
     ]
 
-    waiver_where = "当前功能包 `02-进展.md`" if package_dir is not None else "本次改动记录（如 `02-进展.md`）"
+    if package_dir is not None:
+        waiver_where = "当前功能包 `02-进展.md`"
+    elif active_local_only or hotfix_local_only:
+        waiver_where = "对应功能包 `02-进展.md`（动态目录被 .gitignore 忽略时须显式传 `--package <功能包>` 读取豁免）"
+    else:
+        waiver_where = "本次改动记录（如 `02-进展.md`）"
 
     for rule_key, label, triggered, evidence in checks:
         if not triggered:

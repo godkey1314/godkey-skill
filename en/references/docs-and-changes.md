@@ -56,6 +56,7 @@ A real feature often spans multiple sessions and produces plans, progress logs, 
 
 - **Single cross-session resume point**: At the start of any follow-up session, read `02-active/<pkg>/01-plan.md` and `02-progress.md` to restore full context immediately.
 - **What happens to `ops/` at archive**: Sync final schema into the static DB snapshot and permanent env vars into static deployment docs; keep migration SQL and one-off scripts archived inside `99-archive/<pkg>/ops/` as an audit trail.
+- **Local-only dynamic layer (`.gitignore` compatible)**: If a project keeps `09-changes/` (or `04-changes/`) local via `.gitignore` and commits only static truth docs, `godkey_gate.py` automatically detects gitignored untracked dynamic paths and verifies active progress, `hotfix-log.md`, package artifacts, and package waivers directly on local disk (pass `--package <pkg>` explicitly when reading package waivers).
 
 ---
 

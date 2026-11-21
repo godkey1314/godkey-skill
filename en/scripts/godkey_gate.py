@@ -183,6 +183,128 @@ def commit_exists(project_root: Path, ref: str) -> bool:
     return code == 0
 
 
+def is_git_ignored(project_root: Path, rel_posix: str) -> bool:
+    if not rel_posix or not is_git_repo(project_root):
+        return False
+    code, _, _ = run_git(project_root, ["check-ignore", "-q", "--", rel_posix])
+    return code == 0
+
+
+def is_git_tracked(project_root: Path, rel_posix: str) -> bool:
+    if not rel_posix or not is_git_repo(project_root):
+        return False
+    code, _, _ = run_git(project_root, ["ls-files", "--error-unmatch", "--", rel_posix])
+    return code == 0
+
+
+def is_hotfix_local_only(project_root: Path, hotfix_rel: str) -> bool:
+    return is_git_ignored(project_root, hotfix_rel) and not is_git_tracked(project_root, hotfix_rel)
+
+
+def is_active_progress_local_only(
+    project_root: Path, changes_rel: str, package_dir: Optional[Path] = None
+) -> bool:
+    if package_dir is not None:
+        prog_rel = to_posix_rel(package_dir / "02-progress.md", project_root)
+        if prog_rel:
+            return is_git_ignored(project_root, prog_rel) and not is_git_tracked(project_root, prog_rel)
+    probe_rel = f"{changes_rel}/{STATE_DIRS['active']}/_probe/02-progress.md"
+    return is_git_ignored(project_root, probe_rel)
+
+
+HOTFIX_ENTRY_HEADER_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*[—\-–]\s*(.+)$")
+
+
+def parse_hotfix_entries(hotfix_path: Path) -> List[Tuple[str, str]]:
+    """Parse hotfix-log.md entries into [(date_str, block_text), ...]."""
+    if not hotfix_path.is_file():
+        return []
+    entries: List[Tuple[str, str]] = []
+    cur_date: Optional[str] = None
+    cur_lines: List[str] = []
+    for raw in hotfix_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = HOTFIX_ENTRY_HEADER_RE.match(raw.strip())
+        if m:
+            if cur_date is not None:
+                entries.append((cur_date, "\n".join(cur_lines)))
+            cur_date = m.group(1)
+            cur_lines = [raw]
+        elif cur_date is not None:
+            cur_lines.append(raw)
+    if cur_date is not None:
+        entries.append((cur_date, "\n".join(cur_lines)))
+    return entries
+
+
+def _hotfix_body_mentions_file(body: str, rel_posix: str) -> bool:
+    norm_body = body.replace("\\", "/").lower()
+    norm_rel = rel_posix.replace("\\", "/").strip("./").lower()
+    if norm_rel and norm_rel in norm_body:
+        return True
+    fname = Path(norm_rel).name
+    if not fname:
+        return False
+    return bool(re.search(rf"(?<![a-z0-9_.\-/]){re.escape(fname)}(?![a-z0-9_.\-])", norm_body))
+
+
+def has_local_hotfix_for_files(
+    hotfix_path: Path,
+    code_files: Sequence[str],
+    check_recent_date: bool = True,
+) -> Tuple[bool, str]:
+    """Verify the latest substantive hotfix-log.md entry on disk when gitignored and untracked."""
+    entries = parse_hotfix_entries(hotfix_path)
+    if not entries:
+        return False, f"Local `{hotfix_path.name}` has no valid hotfix entries"
+
+    entry_date, body = entries[-1]
+    body_lines = strip_template_noise(body)
+    if len(body_lines) < 2:
+        return False, f"Latest entry ({entry_date}) in local `{hotfix_path.name}` lacks substantive details"
+
+    if check_recent_date:
+        try:
+            d = dt.date.fromisoformat(entry_date)
+        except ValueError:
+            return False, f"Latest entry in local `{hotfix_path.name}` has invalid date ({entry_date})"
+        today = dt.date.today()
+        if abs((today - d).days) > 1:
+            return False, f"Latest entry in local `{hotfix_path.name}` is dated {entry_date} (not today); append a record for this fix"
+
+    missing = [cf for cf in code_files if not _hotfix_body_mentions_file(body, cf)]
+    if missing:
+        return False, f"Latest entry ({entry_date}) in local `{hotfix_path.name}` does not mention modified file(s): {', '.join(missing)}"
+
+    return True, f"latest entry {entry_date} covers {', '.join(code_files)}"
+
+
+def find_local_active_progress(
+    project_root: Path, changes_root: Path, package_dir: Optional[Path] = None
+) -> List[str]:
+    """Inspect untracked local active packages for substantive 02-progress.md content when gitignored."""
+    tpl_prog = TEMPLATES_ROOT / "change-package" / "02-progress.md"
+    candidates: List[Path]
+    if package_dir is not None:
+        candidates = [package_dir]
+    else:
+        candidates = list_state_packages(changes_root).get("active", [])
+
+    matched: List[str] = []
+    for pkg in candidates:
+        prog = pkg / "02-progress.md"
+        if not prog.is_file():
+            continue
+        prog_rel = to_posix_rel(prog, project_root)
+        if prog_rel and is_git_tracked(project_root, prog_rel):
+            continue
+        added = meaningful_added_lines(prog, tpl_prog)
+        added_chars = sum(len(re.sub(r"\s+", "", ln)) for ln in added)
+        if added and added_chars >= 18:
+            mtime = dt.datetime.fromtimestamp(prog.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            matched.append(f"{pkg.name} (updated {mtime})")
+    return matched
+
+
 def default_config_for(profile: str) -> Dict:
     tpl_cfg = TEMPLATES_ROOT / profile / ".godkey.json"
     return json.loads(tpl_cfg.read_text(encoding="utf-8"))
@@ -863,7 +985,15 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     changes_dir_name = cfg["changesDir"]
     changes_root = doc_root / changes_dir_name
-    print(f"\n--- Dynamic Change Layer ({changes_dir_name}/) ---")
+    doc_root_rel = to_posix_rel(doc_root, project_root)
+    local_only_tag = ""
+    if doc_root_rel is not None:
+        changes_rel = f"{doc_root_rel}/{changes_dir_name}".strip("/")
+        if is_active_progress_local_only(project_root, changes_rel) or is_hotfix_local_only(
+            project_root, f"{changes_rel}/hotfix-log.md"
+        ):
+            local_only_tag = " [local-only, ignored by .gitignore]"
+    print(f"\n--- Dynamic Change Layer ({changes_dir_name}/){local_only_tag} ---")
     if not changes_root.is_dir():
         print("  ERROR: Dynamic changes directory is missing")
         return 1
@@ -1107,6 +1237,18 @@ def evaluate_sync(
 
     changes_rel = f"{doc_root_rel}/{cfg['changesDir']}".strip("/")
     hotfix_rel = f"{changes_rel}/hotfix-log.md"
+    changes_root = doc_root / cfg["changesDir"]
+    hotfix_local_only = is_hotfix_local_only(project_root, hotfix_rel)
+    active_local_only = is_active_progress_local_only(project_root, changes_rel, package_dir)
+    if hotfix_local_only or active_local_only:
+        scope_parts = []
+        if active_local_only:
+            scope_parts.append("active packages")
+        if hotfix_local_only:
+            scope_parts.append("hotfix-log.md")
+        infos.append(
+            f"Note: Dynamic changes ({' & '.join(scope_parts)}) are gitignored and untracked; falling back to local disk verification."
+        )
     hints = cfg.get("codePathHints", {})
     sync_rules = cfg.get("staticSyncRules", {})
 
@@ -1231,7 +1373,20 @@ def evaluate_sync(
                 "use a standard feature package."
             )
         if code_files and hotfix_rel not in dynamic_docs_changed:
-            failures.append(f"Hotfix gate rejected: code changed without updating `{hotfix_rel}`. Run `godkey_gate.py hotfix` first.")
+            if hotfix_local_only:
+                ok_local, detail = has_local_hotfix_for_files(
+                    changes_root / "hotfix-log.md",
+                    code_files,
+                    check_recent_date=(diff_source != "HEAD~1..HEAD"),
+                )
+                if ok_local:
+                    infos.append(f"  OK Hotfix log (local disk check): {detail}")
+                else:
+                    failures.append(
+                        f"Hotfix gate rejected: {detail}. Run `godkey_gate.py hotfix` to record this change."
+                    )
+            else:
+                failures.append(f"Hotfix gate rejected: code changed without updating `{hotfix_rel}`. Run `godkey_gate.py hotfix` first.")
         return len(failures) == 0, infos, warnings, failures
 
     if not code_files and not db_triggers and not ops_triggers and not arch_triggers:
@@ -1240,11 +1395,33 @@ def evaluate_sync(
 
     if gate_mode == "commit":
         has_any_doc = bool(static_docs_changed or dynamic_docs_changed)
+        if not has_any_doc and (active_local_only or hotfix_local_only):
+            local_progs = find_local_active_progress(project_root, changes_root, package_dir) if active_local_only else []
+            if local_progs:
+                has_any_doc = True
+                infos.append(
+                    f"  OK Dynamic progress (local disk check): matched active package(s) {', '.join(local_progs)}"
+                )
+            elif hotfix_local_only and len(code_files) <= 1 and not db_triggers and not ops_triggers and not arch_triggers:
+                ok_hf, detail_hf = has_local_hotfix_for_files(
+                    changes_root / "hotfix-log.md",
+                    code_files,
+                    check_recent_date=(diff_source != "HEAD~1..HEAD"),
+                )
+                if ok_hf:
+                    has_any_doc = True
+                    infos.append(f"  OK Hotfix log (local disk check): {detail_hf}")
         if not has_any_doc:
-            failures.append(
-                "Code modified without updating progress (`02-progress.md` / `hotfix-log.md`) or static docs. "
-                "Record iteration progress before committing."
-            )
+            if active_local_only or hotfix_local_only:
+                failures.append(
+                    "Code modified with no static doc updates and no substantive local progress in gitignored dynamic dirs "
+                    "(`02-active/*/02-progress.md` or matching `hotfix-log.md`). Record iteration progress before committing."
+                )
+            else:
+                failures.append(
+                    "Code modified without updating progress (`02-progress.md` / `hotfix-log.md`) or static docs. "
+                    "Record iteration progress before committing."
+                )
         else:
             pending: List[str] = []
             if code_files and not doc_rule_satisfied(static_docs_changed, doc_root_rel, sync_rules.get("featureDocs", [])):
@@ -1267,7 +1444,12 @@ def evaluate_sync(
         ("archDocs", "System Architecture & Stack", bool(arch_triggers), arch_triggers[:5]),
     ]
 
-    waiver_where = "package `02-progress.md`" if package_dir is not None else "this change's progress log"
+    if package_dir is not None:
+        waiver_where = "package `02-progress.md`"
+    elif active_local_only or hotfix_local_only:
+        waiver_where = "package `02-progress.md` (pass `--package <pkg>` when dynamic dirs are gitignored)"
+    else:
+        waiver_where = "this change's progress log"
 
     for rule_key, label, triggered, evidence in checks:
         if not triggered:

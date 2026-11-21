@@ -444,6 +444,110 @@ class TestEnglishGodKeyGate(unittest.TestCase):
             res_allow = run_git(wt, "commit", "-m", "fix: with hotfix log", check=False)
             self.assertEqual(res_allow.returncode, 0, res_allow.stdout + res_allow.stderr)
 
+    def test_gitignored_changes_dir_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_git_repo(repo)
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("def run(): return 1\n", encoding="utf-8")
+            (repo / "src" / "other.py").write_text("def other(): return 2\n", encoding="utf-8")
+            run_cli("init", "--profile", "full", "--project-root", str(repo), cwd=repo)
+            (repo / ".gitignore").write_text("doc/09-changes/\n", encoding="utf-8")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-m", "chore: baseline with gitignored changes dir")
+
+            # 1) audit shows local-only hint
+            res_audit = run_cli("audit", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_audit.returncode, 0, res_audit.stderr)
+            self.assertIn("Detected mode: full", res_audit.stdout)
+            self.assertIn("ignored by .gitignore", res_audit.stdout)
+
+            # 2) hotfix mode: missing -> FAIL; wrong file -> FAIL; matching file -> PASS
+            (repo / "src" / "app.py").write_text("def run(x=None): return 1 if x is None else x\n", encoding="utf-8")
+            self.assertNotEqual(run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo).returncode, 0)
+
+            run_cli(
+                "hotfix",
+                "--title", "Unrelated fix",
+                "--symptom", "Mismatch check",
+                "--root-cause", "Recorded other.py only",
+                "--files", "src/other.py",
+                "--verify", "tests passed",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            res_hf_wrong = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_hf_wrong.returncode, 0)
+            self.assertIn("does not mention modified file", res_hf_wrong.stderr)
+
+            run_cli(
+                "hotfix",
+                "--title", "Guard None in app",
+                "--symptom", "Crash on None",
+                "--root-cause", "Missing None guard",
+                "--files", "src/app.py",
+                "--verify", "tests passed",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            res_hf_ok = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_hf_ok.returncode, 0, res_hf_ok.stdout + res_hf_ok.stderr)
+            self.assertIn("local disk check", res_hf_ok.stdout)
+
+            # 3) pre-commit hook: 2 files -> no-pkg / empty-tpl / 1-char cheese blocked; substantive progress passes
+            self.assertEqual(run_cli("install-hook", "--project-root", str(repo), cwd=repo).returncode, 0)
+            (repo / "src" / "other.py").write_text("def other(): return 3\n", encoding="utf-8")
+            run_git(repo, "add", "src/app.py", "src/other.py")
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: no pkg", check=False).returncode, 0)
+
+            run_cli("new", "gitignored-feature", "--state", "active", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: empty tpl", check=False).returncode, 0)
+
+            pkg = [p for p in (repo / "doc" / "09-changes" / "02-active").iterdir() if p.is_dir()][0]
+            with (pkg / "02-progress.md").open("a", encoding="utf-8") as fh:
+                fh.write("\n- x\n")
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: 1-char cheese", check=False).returncode, 0)
+
+            fill_feature_artifacts(pkg, "gitignored-feature")
+            res_wip_ok = run_git(repo, "commit", "-m", "wip: with local progress", check=False)
+            self.assertEqual(res_wip_ok.returncode, 0, res_wip_ok.stdout + res_wip_ok.stderr)
+
+            # 4) archive: missing static doc -> FAIL; synced static doc -> PASS without polluting git status
+            res_arch_fail = run_cli("archive", "gitignored-feature", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_arch_fail.returncode, 0)
+            self.assertIn("featureDocs", res_arch_fail.stderr)
+
+            (repo / "doc" / "04-feature-design" / "core.md").write_text("# Core\n\nUpdated app and other behavior.\n", encoding="utf-8")
+            res_arch_ok = run_cli("archive", "gitignored-feature", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_arch_ok.returncode, 0, res_arch_ok.stdout + res_arch_ok.stderr)
+            self.assertIn("ARCHIVE PASS", res_arch_ok.stdout)
+            self.assertNotIn("09-changes", run_git(repo, "status", "--porcelain").stdout)
+
+        # 5) Partial ignore (only 02-active/ ignored, hotfix-log.md tracked): unmodified tracked hotfix must still block
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_git_repo(repo)
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("def run(): return 1\n", encoding="utf-8")
+            run_cli("init", "--profile", "full", "--project-root", str(repo), cwd=repo)
+            (repo / ".gitignore").write_text("doc/09-changes/02-active/\n", encoding="utf-8")
+            run_cli(
+                "hotfix",
+                "--title", "Older tracked fix",
+                "--symptom", "Old issue",
+                "--root-cause", "Old root cause",
+                "--files", "src/app.py",
+                "--verify", "Old verify",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-m", "chore: tracked hotfix + ignored active dir")
+
+            (repo / "src" / "app.py").write_text("def run(): return 2\n", encoding="utf-8")
+            res_tracked_block = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_tracked_block.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

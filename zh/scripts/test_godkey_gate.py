@@ -483,6 +483,111 @@ class TestGodKeyGate(unittest.TestCase):
             res_no_clobber = run_cli("install-hook", "--project-root", str(wt), cwd=wt)
             self.assertNotEqual(res_no_clobber.returncode, 0)
 
+    def test_gitignored_changes_dir_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_git_repo(repo)
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("def run(): return 1\n", encoding="utf-8")
+            (repo / "src" / "other.py").write_text("def other(): return 2\n", encoding="utf-8")
+            run_cli("init", "--profile", "full", "--project-root", str(repo), cwd=repo)
+            (repo / ".gitignore").write_text("doc/09-迭代变更/\n", encoding="utf-8")
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-m", "chore: baseline with gitignored changes dir")
+
+            # 1) audit 显式标注本地保留且正常工作
+            res_audit = run_cli("audit", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_audit.returncode, 0, res_audit.stderr)
+            self.assertIn("识别模式：full", res_audit.stdout)
+            self.assertIn("已被 .gitignore 忽略", res_audit.stdout)
+
+            # 2) hotfix 模式：未记台账 -> FAIL；记错文件名 -> FAIL；记对文件名 -> PASS
+            (repo / "src" / "app.py").write_text("def run(x=None): return 1 if x is None else x\n", encoding="utf-8")
+            self.assertNotEqual(run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo).returncode, 0)
+
+            run_cli(
+                "hotfix",
+                "--title", "无关文件记录",
+                "--symptom", "测试不匹配拦截",
+                "--root-cause", "仅记录了 other.py",
+                "--files", "src/other.py",
+                "--verify", "单测通过",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            res_hf_wrong = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_hf_wrong.returncode, 0)
+            self.assertIn("未涵盖本次改动文件", res_hf_wrong.stderr)
+
+            run_cli(
+                "hotfix",
+                "--title", "修复 app 空值",
+                "--symptom", "None 入参未处理",
+                "--root-cause", "缺少判空",
+                "--files", "src/app.py",
+                "--verify", "单测通过",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            res_hf_ok = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_hf_ok.returncode, 0, res_hf_ok.stdout + res_hf_ok.stderr)
+            self.assertIn("本地磁盘核验", res_hf_ok.stdout)
+
+            # 3) pre-commit hook：改 2 文件 -> 无包拦截、空模板拦截、1 字敷衍拦截、实质进展放行
+            self.assertEqual(run_cli("install-hook", "--project-root", str(repo), cwd=repo).returncode, 0)
+            (repo / "src" / "other.py").write_text("def other(): return 3\n", encoding="utf-8")
+            run_git(repo, "add", "src/app.py", "src/other.py")
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: no pkg", check=False).returncode, 0)
+
+            run_cli("new", "忽略目录兼容功能", "--state", "active", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: empty tpl", check=False).returncode, 0)
+
+            pkg = [p for p in (repo / "doc" / "09-迭代变更" / "02-进行中").iterdir() if p.is_dir()][0]
+            with (pkg / "02-进展.md").open("a", encoding="utf-8") as fh:
+                fh.write("\n- x\n")
+            self.assertNotEqual(run_git(repo, "commit", "-m", "wip: 1-char cheese", check=False).returncode, 0)
+
+            fill_feature_artifacts(pkg, "忽略目录兼容功能")
+            res_wip_ok = run_git(repo, "commit", "-m", "wip: with local progress", check=False)
+            self.assertEqual(res_wip_ok.returncode, 0, res_wip_ok.stdout + res_wip_ok.stderr)
+
+            # 4) archive：未同步静态文档 -> FAIL；同步后 -> ARCHIVE PASS 且 git status 无动态目录污染
+            res_arch_fail = run_cli("archive", "忽略目录兼容功能", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_arch_fail.returncode, 0)
+            self.assertIn("featureDocs", res_arch_fail.stderr)
+
+            (repo / "doc" / "04-功能设计" / "核心逻辑.md").write_text("# 核心逻辑\n\n更新 app 与 other 行为契约。\n", encoding="utf-8")
+            res_arch_ok = run_cli("archive", "忽略目录兼容功能", "--project-root", str(repo), cwd=repo)
+            self.assertEqual(res_arch_ok.returncode, 0, res_arch_ok.stdout + res_arch_ok.stderr)
+            self.assertIn("ARCHIVE PASS", res_arch_ok.stdout)
+            self.assertNotIn("09-迭代变更", run_git(repo, "status", "--porcelain").stdout)
+
+        # 5) 部分忽略（仅忽略 02-进行中/，不忽略已纳入 Git 的 hotfix记录.md）时，已跟踪 hotfix 不得跳过 Git diff 检查
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            init_git_repo(repo)
+            (repo / "src").mkdir()
+            (repo / "src" / "app.py").write_text("def run(): return 1\n", encoding="utf-8")
+            run_cli("init", "--profile", "full", "--project-root", str(repo), cwd=repo)
+            (repo / ".gitignore").write_text("doc/09-迭代变更/02-进行中/\n", encoding="utf-8")
+            run_cli(
+                "hotfix",
+                "--title", "旧历史修复",
+                "--symptom", "旧问题",
+                "--root-cause", "旧原因",
+                "--files", "src/app.py",
+                "--verify", "旧验证",
+                "--project-root", str(repo),
+                cwd=repo,
+            )
+            run_git(repo, "add", ".")
+            run_git(repo, "commit", "-m", "chore: tracked hotfix + ignored active dir")
+
+            # 仅改 src/app.py 不改已跟踪的 hotfix记录.md -> 必须被 hotfix 门禁拦截（不得借历史同日条目绕过）
+            (repo / "src" / "app.py").write_text("def run(): return 2\n", encoding="utf-8")
+            res_tracked_block = run_cli("check-sync", "--mode", "hotfix", "--project-root", str(repo), cwd=repo)
+            self.assertNotEqual(res_tracked_block.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
