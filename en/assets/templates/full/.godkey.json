@@ -1,0 +1,51 @@
+{
+  "profile": "full",
+  "changesDir": "09-changes",
+  "staticSyncRules": {
+    "featureDocs": ["04-feature-design"],
+    "archDocs": ["03-architecture"],
+    "dbDocs": ["05-database"],
+    "opsDocs": ["07-deployment"]
+  },
+  "codePathHints": {
+    "db": [
+      "*.sql",
+      "migration",
+      "migrations",
+      "alembic",
+      "prisma",
+      "*schema*",
+      "*model*",
+      "*entity*",
+      "*entities*"
+    ],
+    "ops": [
+      "dockerfile*",
+      "docker-compose*",
+      "compose*.yml",
+      "compose*.yaml",
+      ".env.example",
+      ".env.sample",
+      ".env.template",
+      "nginx*",
+      "*deploy*",
+      "k8s",
+      "helm",
+      ".github/workflows/*"
+    ],
+    "arch": [
+      "pyproject.toml",
+      "uv.lock",
+      "poetry.lock",
+      "package.json",
+      "go.mod",
+      "cargo.toml",
+      "composer.json",
+      "gemfile",
+      "cmakelists.txt",
+      "pom.xml",
+      "build.gradle*",
+      "requirements*.txt"
+    ]
+  }
+}

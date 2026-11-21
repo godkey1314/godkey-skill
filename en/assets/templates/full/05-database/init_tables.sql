@@ -1,0 +1,15 @@
+-- ===================================================
+-- Current Database Schema Snapshot (Latest Full DDL)
+-- Note: Keep only the latest full baseline table definitions here.
+--       Place incremental migration SQL and one-off repair scripts in
+--       each feature package's ops/ directory.
+-- ===================================================
+
+-- Example table (replace with your project's actual dialect and tables):
+-- CREATE TABLE IF NOT EXISTS users (
+--   id BIGINT PRIMARY KEY,
+--   username VARCHAR(64) NOT NULL UNIQUE,
+--   status SMALLINT NOT NULL DEFAULT 1,
+--   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- );
