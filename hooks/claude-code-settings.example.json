@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'SCRIPT=\"${GODKEY_GATE_SCRIPT:-$HOME/.claude/skills/godkey-skill/scripts/godkey_gate.py}\"; [ -f \"$SCRIPT\" ] || exit 0; python3 \"$SCRIPT\" check-sync --mode commit --project-root . || exit 2'"
+          }
+        ]
+      }
+    ]
+  }
+}

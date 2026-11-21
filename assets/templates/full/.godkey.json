@@ -1,0 +1,51 @@
+{
+  "profile": "full",
+  "changesDir": "09-迭代变更",
+  "staticSyncRules": {
+    "featureDocs": ["04-功能设计"],
+    "archDocs": ["03-系统架构"],
+    "dbDocs": ["05-数据库"],
+    "opsDocs": ["07-部署运维"]
+  },
+  "codePathHints": {
+    "db": [
+      "*.sql",
+      "migration",
+      "migrations",
+      "alembic",
+      "prisma",
+      "*schema*",
+      "*model*",
+      "*entity*",
+      "*entities*"
+    ],
+    "ops": [
+      "dockerfile*",
+      "docker-compose*",
+      "compose*.yml",
+      "compose*.yaml",
+      ".env.example",
+      ".env.sample",
+      ".env.template",
+      "nginx*",
+      "*deploy*",
+      "k8s",
+      "helm",
+      ".github/workflows/*"
+    ],
+    "arch": [
+      "pyproject.toml",
+      "uv.lock",
+      "poetry.lock",
+      "package.json",
+      "go.mod",
+      "cargo.toml",
+      "composer.json",
+      "gemfile",
+      "cmakelists.txt",
+      "pom.xml",
+      "build.gradle*",
+      "requirements*.txt"
+    ]
+  }
+}

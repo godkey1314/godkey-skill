@@ -1,0 +1,14 @@
+-- ===================================================
+-- 数据库最新基线表结构快照（Current Schema Snapshot）
+-- 说明：仅维护当前最新完整建表 DDL；
+--       增量迁移 SQL 与一次性订正脚本请放在对应功能包的 ops/ 目录中。
+-- ===================================================
+
+-- 示例表（按项目实际数据库方言替换）：
+-- CREATE TABLE IF NOT EXISTS users (
+--   id BIGINT PRIMARY KEY,
+--   username VARCHAR(64) NOT NULL UNIQUE,
+--   status SMALLINT NOT NULL DEFAULT 1,
+--   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- );
